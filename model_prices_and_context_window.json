@@ -78175,8 +78175,10 @@
             "us": 1.1
         },
         "supports_output_config": true,
-        "prompt_cache_min_tokens": 1024,
-        "source": "https://platform.claude.com/docs/en/about-claude/pricing"
+        "prompt_cache_min_tokens": 512.0,
+        "source": "https://platform.claude.com/docs/en/models/sonnet-5-5/overview",
+        "supports_forced_tool_use": false,
+        "supports_web_search": true
     },
     "databricks/databricks-claude-sonnet-5-5": {
         "cache_creation_input_token_cost": 3.74997e-06,
