@@ -112,7 +112,7 @@ def _assert_entity_activity_routes(
     aggregated: Final = gateway.request(
         "GET",
         f"{prefix}/daily/activity/aggregated",
-        params=params,
+        params={**params, "api_key_limit": "3"},
     )
     assert aggregated.status_code == 200, aggregated.text
     aggregate_body: Final = object_value(aggregated.json())
@@ -164,7 +164,7 @@ def _assert_entity_activity_routes(
 
 @pytest.mark.timeout(90)
 def test_daily_activity_routes_cover_all_entities_and_bounded_key_search(gateway: Gateway, tmp_path: Path) -> None:
-    with owned_proxy(gateway, tmp_path, {"USAGE_TOP_API_KEYS_LIMIT": "3"}) as proxy:
+    with owned_proxy(gateway, tmp_path, {}) as proxy:
         _assert_daily_activity_routes(proxy)
 
 

@@ -244,6 +244,9 @@ def _register_aggregated_route(router: APIRouter, resolver: EntityScopeResolver,
         user_api_key_dict: Annotated[UserAPIKeyAuth, Depends(user_api_key_auth)],
         repository: Annotated[DailyActivityRepository, Depends(get_daily_activity_repository)],
         prisma_client: Annotated[PrismaClient, Depends(get_daily_activity_prisma_client)],
+        api_key_limit: Annotated[
+            int, Query(ge=1, le=constants.USAGE_TOP_API_KEYS_MAX)
+        ] = constants.USAGE_TOP_API_KEYS_DEFAULT,
     ) -> SpendAnalyticsPaginatedResponse:
         try:
             resolved: ResolvedScope = await _resolved_scope(
@@ -258,6 +261,7 @@ def _register_aggregated_route(router: APIRouter, resolver: EntityScopeResolver,
                 resolved.scope,
                 entity_metadata_field=resolved.entity_metadata,
                 include_entity_breakdown=resolver.include_entity_breakdown,
+                api_key_limit=api_key_limit,
             )
         except HTTPException:
             raise
@@ -314,6 +318,7 @@ def _register_search_route(router: APIRouter, resolver: EntityScopeResolver, pre
         user_api_key_dict: Annotated[UserAPIKeyAuth, Depends(user_api_key_auth)],
         repository: Annotated[DailyActivityRepository, Depends(get_daily_activity_repository)],
         prisma_client: Annotated[PrismaClient, Depends(get_daily_activity_prisma_client)],
+        limit: Annotated[int, Query(ge=1, le=constants.USAGE_KEY_SEARCH_MAX)] = constants.USAGE_KEY_SEARCH_DEFAULT,
     ) -> DailyActivityKeySearchResponse:
         try:
             resolved: ResolvedScope = await _resolved_scope(
@@ -326,7 +331,7 @@ def _register_search_route(router: APIRouter, resolver: EntityScopeResolver, pre
             keys: tuple[str, ...] = await repository.search_keys(
                 resolved.scope,
                 search=search,
-                limit=constants.USAGE_KEY_SEARCH_LIMIT,
+                limit=limit,
             )
             if not keys:
                 return DailyActivityKeySearchResponse(api_keys=[])
@@ -363,6 +368,9 @@ def _register_model_top_keys_route(router: APIRouter, resolver: EntityScopeResol
         prisma_client: Annotated[PrismaClient, Depends(get_daily_activity_prisma_client)],
         model_group: Annotated[str, Query(min_length=1)],
         by_model_group: Annotated[bool, Query()] = True,
+        limit: Annotated[int, Query(ge=1, le=constants.USAGE_MODEL_TOP_KEYS_MAX)] = (
+            constants.USAGE_MODEL_TOP_KEYS_DEFAULT
+        ),
     ) -> ModelTopKeysResponse:
         try:
             resolved: ResolvedScope = await _resolved_scope(
@@ -376,7 +384,7 @@ def _register_model_top_keys_route(router: APIRouter, resolver: EntityScopeResol
                 resolved.scope,
                 model_group=model_group,
                 by_model_group=by_model_group,
-                limit=constants.USAGE_MODEL_TOP_KEYS_LIMIT,
+                limit=limit,
             )
             return ModelTopKeysResponse(
                 model=model_group,
@@ -469,6 +477,9 @@ def _register_cache_leakage_route(router: APIRouter, resolver: EntityScopeResolv
         user_api_key_dict: Annotated[UserAPIKeyAuth, Depends(user_api_key_auth)],
         repository: Annotated[DailyActivityRepository, Depends(get_daily_activity_repository)],
         prisma_client: Annotated[PrismaClient, Depends(get_daily_activity_prisma_client)],
+        limit: Annotated[
+            int, Query(ge=1, le=constants.USAGE_CACHE_LEAKAGE_KEYS_MAX)
+        ] = constants.USAGE_CACHE_LEAKAGE_KEYS_DEFAULT,
     ) -> CacheLeakageKeysResponse:
         try:
             resolved: ResolvedScope = await _resolved_scope(
@@ -480,7 +491,7 @@ def _register_cache_leakage_route(router: APIRouter, resolver: EntityScopeResolv
             )
             rows: tuple[KeySpendRow, ...] = await repository.cache_leakage_keys(
                 resolved.scope,
-                limit=constants.USAGE_CACHE_LEAKAGE_KEYS_LIMIT,
+                limit=limit,
             )
             return CacheLeakageKeysResponse(
                 api_keys=await _key_activity_rows(repository, rows, resolved),

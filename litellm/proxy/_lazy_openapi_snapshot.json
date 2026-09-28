@@ -4343,6 +4343,18 @@
           "parameters": [
             {
               "in": "query",
+              "name": "api_key_limit",
+              "required": false,
+              "schema": {
+                "default": 100,
+                "maximum": 1000,
+                "minimum": 1,
+                "title": "Api Key Limit",
+                "type": "integer"
+              }
+            },
+            {
+              "in": "query",
               "name": "agent_ids",
               "required": false,
               "schema": {
@@ -4513,6 +4525,18 @@
             },
             {
               "in": "query",
+              "name": "limit",
+              "required": false,
+              "schema": {
+                "default": 5,
+                "maximum": 100,
+                "minimum": 1,
+                "title": "Limit",
+                "type": "integer"
+              }
+            },
+            {
+              "in": "query",
               "name": "agent_ids",
               "required": false,
               "schema": {
@@ -4669,6 +4693,18 @@
                 "minLength": 1,
                 "title": "Search",
                 "type": "string"
+              }
+            },
+            {
+              "in": "query",
+              "name": "limit",
+              "required": false,
+              "schema": {
+                "default": 100,
+                "maximum": 100,
+                "minimum": 1,
+                "title": "Limit",
+                "type": "integer"
               }
             },
             {

@@ -246,7 +246,13 @@ class _FakeRepository:
             and (scope.model is None or row.model == scope.model)
         )
 
-    async def _aggregated(self, scope: DailyActivityScope, *, include_entity_breakdown: bool = False) -> AggregatedRows:
+    async def _aggregated(
+        self,
+        scope: DailyActivityScope,
+        *,
+        include_entity_breakdown: bool = False,
+        api_key_limit: int = constants.USAGE_TOP_API_KEYS_DEFAULT,
+    ) -> AggregatedRows:
         rows: Final = self._matching_rows(scope)
         key_spend: Final = tuple(
             sorted(
@@ -255,7 +261,7 @@ class _FakeRepository:
             )
         )
         distinct_keys: Final = len(key_spend)
-        top_keys: Final = tuple(key for key, _ in key_spend[: constants.USAGE_TOP_API_KEYS_LIMIT])
+        top_keys: Final = tuple(key for key, _ in key_spend[:api_key_limit])
         dates: Final = tuple(sorted({row.date for row in rows}))
         grouping_rows: Final = (
             _grouping_row(rows, date=None, api_key=None, group_level=127, distinct_api_keys=distinct_keys),
@@ -588,15 +594,15 @@ def test_search_folds_each_entity_key_across_days(
 
 
 def test_search_finds_keys_outside_the_top_keys_limit_and_skips_empty_aggregate(
-    daily_activity_client: tuple[TestClient, _FakeRepository], monkeypatch: pytest.MonkeyPatch
+    daily_activity_client: tuple[TestClient, _FakeRepository]
 ) -> None:
     client, repository = daily_activity_client
-    monkeypatch.setattr(constants, "USAGE_TOP_API_KEYS_LIMIT", 3)
     aggregate_response: Final = client.get(
         "/user/daily/activity/aggregated",
-        params=_entity_params("user_id", "user-a"),
+        params={**_entity_params("user_id", "user-a"), "api_key_limit": 3},
     )
     assert aggregate_response.status_code == 200, aggregate_response.text
+    assert repository.aggregated.call_args.kwargs["api_key_limit"] == 3
     top_keys: Final = frozenset(
         chain.from_iterable(result["breakdown"]["api_keys"] for result in aggregate_response.json()["results"])
     )
@@ -604,9 +610,10 @@ def test_search_finds_keys_outside_the_top_keys_limit_and_skips_empty_aggregate(
 
     search_response: Final = client.get(
         "/user/daily/activity/aggregated/search",
-        params={**_entity_params("user_id", "user-a"), "search": "target"},
+        params={**_entity_params("user_id", "user-a"), "search": "target", "limit": 7},
     )
     assert search_response.status_code == 200, search_response.text
+    assert repository.search_keys.call_args.kwargs["limit"] == 7
     assert search_response.json()["api_keys"][0]["api_key"] == "key-target"
     assert search_response.json()["api_keys"][0]["metrics"]["spend"] == pytest.approx(0.5)
     search_metrics: Final = search_response.json()["api_keys"][0]["metrics"]
@@ -624,19 +631,88 @@ def test_search_finds_keys_outside_the_top_keys_limit_and_skips_empty_aggregate(
     repository.aggregated.assert_not_awaited()
 
 
+@pytest.mark.parametrize(
+    ("path", "route_params", "limit_name", "invalid_limit"),
+    (
+        ("/user/daily/activity/aggregated", {}, "api_key_limit", 0),
+        (
+            "/user/daily/activity/aggregated",
+            {},
+            "api_key_limit",
+            constants.USAGE_TOP_API_KEYS_MAX + 1,
+        ),
+        ("/user/daily/activity/aggregated/search", {"search": "key"}, "limit", 0),
+        (
+            "/user/daily/activity/aggregated/search",
+            {"search": "key"},
+            "limit",
+            constants.USAGE_KEY_SEARCH_MAX + 1,
+        ),
+        (
+            "/user/daily/activity/aggregated/model_top_keys",
+            {"model_group": "popular-group"},
+            "limit",
+            0,
+        ),
+        (
+            "/user/daily/activity/aggregated/model_top_keys",
+            {"model_group": "popular-group"},
+            "limit",
+            constants.USAGE_MODEL_TOP_KEYS_MAX + 1,
+        ),
+        (
+            "/user/daily/activity/aggregated/cache_leakage_keys",
+            {},
+            "limit",
+            0,
+        ),
+        (
+            "/user/daily/activity/aggregated/cache_leakage_keys",
+            {},
+            "limit",
+            constants.USAGE_CACHE_LEAKAGE_KEYS_MAX + 1,
+        ),
+    ),
+)
+def test_usage_limit_routes_reject_values_outside_bounds(
+    daily_activity_client: tuple[TestClient, _FakeRepository],
+    path: str,
+    route_params: Mapping[str, str],
+    limit_name: str,
+    invalid_limit: int,
+) -> None:
+    client, repository = daily_activity_client
+    response: Final = client.get(
+        path,
+        params={
+            **_entity_params("user_id", "user-a"),
+            **route_params,
+            limit_name: invalid_limit,
+        },
+    )
+
+    assert response.status_code == 422, response.text
+    repository.aggregated.assert_not_awaited()
+    repository.search_keys.assert_not_awaited()
+    repository.model_top_keys.assert_not_awaited()
+    repository.cache_leakage_keys.assert_not_awaited()
+
+
 @pytest.mark.parametrize(("prefix", "query_name", "entity_id"), _ENTITY_CASES)
 def test_model_top_routes_rank_keys_and_include_metadata(
     daily_activity_client: tuple[TestClient, _FakeRepository], prefix: str, query_name: str, entity_id: str
 ) -> None:
-    client, _ = daily_activity_client
+    client, repository = daily_activity_client
     response: Final = client.get(
         f"{prefix}/daily/activity/aggregated/model_top_keys",
         params={
             **_entity_params(query_name, entity_id),
             "model_group": "rare-group",
+            "limit": 3,
         },
     )
     assert response.status_code == 200, response.text
+    assert repository.model_top_keys.call_args.kwargs["limit"] == 3
     assert response.json()["model"] == "rare-group"
     assert response.json()["by_model_group"] is True
     assert tuple(row["api_key"] for row in response.json()["api_keys"]) == ("key-target",)
@@ -663,10 +739,8 @@ def test_export_routes_stream_csv_and_preserve_row_counts(
     prefix: str,
     query_name: str,
     entity_id: str,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     client, _ = daily_activity_client
-    monkeypatch.setattr(constants, "USAGE_TOP_API_KEYS_LIMIT", 3)
     response: Final = client.get(
         f"{prefix}/daily/activity/export",
         params={**_entity_params(query_name, entity_id), "export_type": ExportType.DAILY.value},
@@ -677,7 +751,6 @@ def test_export_routes_stream_csv_and_preserve_row_counts(
     records: Final = tuple(csv.reader(io.StringIO(response.text)))
     assert tuple(records[0]) == tuple(field.name for field in fields(ExportRow))
     assert len(records) == 7
-    assert len(records) - 1 > constants.USAGE_TOP_API_KEYS_LIMIT
     assert records[1][2] == "'=entity"
     assert records[1][4] == "'+key"
 
@@ -688,10 +761,8 @@ def test_export_routes_stream_json_arrays(
     prefix: str,
     query_name: str,
     entity_id: str,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     client, _ = daily_activity_client
-    monkeypatch.setattr(constants, "USAGE_TOP_API_KEYS_LIMIT", 3)
     response: Final = client.get(
         f"{prefix}/daily/activity/export",
         params={**_entity_params(query_name, entity_id), "format": "json"},
@@ -701,7 +772,6 @@ def test_export_routes_stream_json_arrays(
     assert response.headers["cache-control"] == "no-store"
     records: Final = response.json()
     assert isinstance(records, list) and len(records) == 6, response.text
-    assert len(records) > constants.USAGE_TOP_API_KEYS_LIMIT
     assert records[0]["entity_alias"] == "=entity"
 
 
@@ -934,9 +1004,10 @@ def test_user_cache_leakage_route_returns_cache_keys_and_metadata(
     client, repository = daily_activity_client
     response: Final = client.get(
         "/user/daily/activity/aggregated/cache_leakage_keys",
-        params=_entity_params("user_id", "user-a"),
+        params={**_entity_params("user_id", "user-a"), "limit": 4},
     )
     assert response.status_code == 200, response.text
+    assert repository.cache_leakage_keys.call_args.kwargs["limit"] == 4
     assert tuple(row["api_key"] for row in response.json()["api_keys"]) == ("key-cache",)
     metrics: Final = response.json()["api_keys"][0]["metrics"]
     expected_row: Final = KeySpendRow(
