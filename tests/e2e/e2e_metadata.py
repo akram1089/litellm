@@ -5,21 +5,25 @@ order, so the list IS the test's user story and its last element is where a
 failing test died. Nothing about it is hand-written, so it cannot drift from
 what the test actually did.
 
-Stdlib-only on purpose. tests/e2e is a black-box HTTP suite that imports litellm
-in zero files and is shipped to the runner image as tests/e2e alone, and every
-harness module imports this one.
+tests/e2e is a black-box HTTP suite that imports litellm in zero files and is
+shipped to the runner image as tests/e2e alone, and every harness module imports
+this one, so it imports only the stdlib and pydantic.
 """
 
 from __future__ import annotations
 
 import inspect
+import string
 import threading
 from collections import deque
-from collections.abc import Callable, Generator
+from collections.abc import Callable, Generator, Iterable
 from contextlib import AbstractContextManager, contextmanager
+from enum import Enum
 from functools import wraps
 from types import TracebackType
 from typing import Final, ParamSpec, TypeVar, cast
+
+from pydantic import BaseModel
 
 _P = ParamSpec("_P")
 _R = TypeVar("_R")
@@ -84,6 +88,45 @@ class _StepRecorder:
 
 
 STEPS: Final = _StepRecorder()
+
+
+def _joined(phrases: tuple[str, ...]) -> str:
+    if len(phrases) <= 1:
+        return "".join(phrases)
+    return f"{', '.join(phrases[:-1])} and {phrases[-1]}"
+
+
+def _model_phrase(model: BaseModel) -> str:
+    """The fields the caller set, as "models: a, b and rpm limit: 3". A
+    `Field(repr=False)` field, pydantic's flag for a secret, is never shown."""
+    values: Final = (
+        (name, cast("object", getattr(model, name)))
+        for name, field in type(model).model_fields.items()
+        if name in model.model_fields_set and field.repr
+    )
+    phrases: Final = tuple(f"{name.replace('_', ' ')}: {_phrase(value)}" for name, value in values if value is not None)
+    return _joined(phrases) or "default settings"
+
+
+def _phrase(value: object) -> str:
+    if isinstance(value, BaseModel):
+        return _model_phrase(value)
+    if isinstance(value, Enum):
+        return _phrase(cast("object", value.value))
+    if isinstance(value, (list, tuple, set, frozenset)):
+        return ", ".join(map(_phrase, cast("Iterable[object]", value)))
+    return str(value)
+
+
+def _placeholders(label: str) -> frozenset[str]:
+    return frozenset(field for _, field, _, _ in string.Formatter().parse(label) if field is not None)
+
+
+def _filled(label: str, placeholders: frozenset[str], bound: inspect.BoundArguments) -> str:
+    if not placeholders:
+        return label.format()
+    bound.apply_defaults()
+    return label.format_map({name: _phrase(cast("object", bound.arguments[name])) for name in placeholders})
 
 
 class _Nesting(threading.local):
@@ -161,6 +204,11 @@ def step(label: str) -> Callable[[Callable[_P, _R]], Callable[_P, _R]]:
     """
 
     def decorate(fn: Callable[_P, _R]) -> Callable[_P, _R]:
+        signature: Final = inspect.signature(fn)
+        placeholders: Final = _placeholders(label)
+        unknown: Final = placeholders - signature.parameters.keys()
+        if unknown:
+            raise TypeError(f"@step({label!r}) names {sorted(unknown)}, which {fn.__qualname__} doesn't take")
         if inspect.isgeneratorfunction(fn):
             raise TypeError(
                 f"@step({label!r}) cannot wrap the generator function {fn!r}: put it on a helper that"
@@ -172,7 +220,7 @@ def step(label: str) -> Callable[[Callable[_P, _R]], Callable[_P, _R]]:
         @wraps(fn)
         def wrapper(*args: _P.args, **kwargs: _P.kwargs) -> _R:
             if not _NESTING.inside:
-                STEPS.record(label)
+                STEPS.record(_filled(label, placeholders, signature.bind(*args, **kwargs)))
             with _inside_step():
                 result = fn(*args, **kwargs)
             if opens_a_context and isinstance(result, AbstractContextManager):

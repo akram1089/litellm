@@ -342,7 +342,7 @@ class PassthroughClient:
             response_type=PassthroughFileObject,
         )
 
-    @step("DELETE /openai_passthrough/v1/files/{id}")
+    @step("DELETE /openai_passthrough/v1/files/{{id}}")
     def openai_passthrough_delete_file(
         self, key: str, file_id: str
     ) -> Result[PassthroughFileDeleted]:

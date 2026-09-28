@@ -598,7 +598,7 @@ class SpendClient:
             )
         )
 
-    @step("GET /v1/batches/{id}")
+    @step("GET /v1/batches/{{id}}")
     def retrieve_batch(self, key: str, batch_id: str, *, provider: str) -> BatchObject:
         return unwrap(
             self.proxy.transport.get(

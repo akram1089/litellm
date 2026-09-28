@@ -471,7 +471,7 @@ class ProxyClient:
 
     # ---- keys / customers (satisfies lifecycle.ResourceClient) ----------
 
-    @step("generate virtual key")
+    @step("Generate a virtual key with {body}")
     def generate_key(self, body: KeyGenerateBody) -> str:
         return unwrap(
             self.transport.post(
@@ -502,7 +502,7 @@ class ProxyClient:
             response_type=NoBody,
         )
 
-    @step("read /key/info")
+    @step("Read the key's settings back from /key/info")
     def key_info(self, key: str) -> KeyInfo:
         return unwrap(
             self.transport.get(

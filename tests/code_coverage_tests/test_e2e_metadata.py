@@ -1,4 +1,4 @@
-"""The e2e step recorder's edge cases: dedupe, the cap, nesting, context managers.
+"""The e2e step recorder's edge cases: label templates, dedupe, the cap, nesting, context managers.
 
 Harness logic, so it lives here rather than under tests/e2e, which holds only
 tests that drive a live proxy. The harness modules are imported off
@@ -18,6 +18,7 @@ from pathlib import Path
 
 import pytest
 from e2e_metadata import MAX_STEPS, STEP_FRAMES, STEPS, step
+from pydantic import BaseModel, Field
 
 
 @pytest.fixture(autouse=True)
@@ -103,6 +104,64 @@ class TestStepRecording:
             warnings.simplefilter("always")
             delete_team()
         assert [Path(warning.filename).name for warning in caught] == [Path(__file__).name]
+
+
+class _KeyBody(BaseModel):
+    models: list[str] = []
+    rpm_limit: int | None = None
+    tpm_limit: int | None = None
+    team_id: str | None = None
+    api_key: str | None = Field(default=None, repr=False)
+
+
+class TestLabelTemplates:
+    """A label's `{placeholders}` are filled from the call's own arguments, so the
+    story says what the test asked for in words, and nothing the label doesn't name
+    ever reaches the report."""
+
+    def test_placeholders_take_the_call_arguments_and_defaults(self) -> None:
+        @step('Send a request to {model} with the prompt "{content}" capped at {max_tokens} tokens')
+        def chat(key: str, model: str, content: str, *, max_tokens: int = 16) -> None:
+            return None
+
+        chat("sk-live", "claude-haiku-4-5", content="hi")
+        assert STEPS.taken() == ('Send a request to claude-haiku-4-5 with the prompt "hi" capped at 16 tokens',)
+
+    def test_a_request_model_reads_as_only_the_fields_the_test_set(self) -> None:
+        @step("Generate a virtual key with {body}")
+        def generate_key(body: _KeyBody) -> None:
+            return None
+
+        generate_key(_KeyBody(models=["a", "b"], rpm_limit=3, tpm_limit=None, api_key="sk-live"))
+        generate_key(_KeyBody())
+        assert STEPS.taken() == (
+            "Generate a virtual key with models: a, b and rpm limit: 3",
+            "Generate a virtual key with default settings",
+        )
+
+    def test_calls_differing_only_in_arguments_are_separate_steps(self) -> None:
+        @step('Send "{content}"')
+        def chat(content: str) -> None:
+            return None
+
+        for content in ("one", "one", "two"):
+            chat(content)
+        assert STEPS.taken() == ('Send "one"', 'Send "two"')
+
+    def test_a_placeholder_the_helper_does_not_take_fails_at_import(self) -> None:
+        def chat(model: str) -> None:
+            return None
+
+        with pytest.raises(TypeError, match="modle"):
+            _ = step("Send a request to {modle}")(chat)
+
+    def test_escaped_braces_stay_literal(self) -> None:
+        @step("GET /v1/batches/{{id}}")
+        def retrieve_batch(batch_id: str) -> None:
+            return None
+
+        retrieve_batch("batch_123")
+        assert STEPS.taken() == ("GET /v1/batches/{id}",)
 
 
 class TestNestedSteps:

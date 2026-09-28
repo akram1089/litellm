@@ -359,7 +359,7 @@ class A2AClient:
         if not is_ok(result):
             warnings.warn(f"delete_agent({agent_id!r}) failed: {result}", stacklevel=2 + STEP_FRAMES)
 
-    @step("GET /a2a/{id}/.well-known/agent-card.json")
+    @step("GET /a2a/{{id}}/.well-known/agent-card.json")
     def agent_card(self, agent_id: str, key: str) -> Result[ServedAgentCard]:
         return self.proxy.transport.get(
             f"/a2a/{agent_id}/.well-known/agent-card.json",
@@ -368,7 +368,7 @@ class A2AClient:
             response_type=ServedAgentCard,
         )
 
-    @step("POST /a2a/{id} (message/send)")
+    @step("POST /a2a/{{id}} (message/send)")
     def send_message(self, agent_id: str, key: str, body: A2AJsonRpcRequest) -> Result[A2AResponse]:
         return self.proxy.transport.post(
             f"/a2a/{agent_id}",

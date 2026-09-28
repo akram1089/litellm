@@ -165,7 +165,7 @@ class BatchClient:
             response_type=FileObject,
         )
 
-    @step("GET /v1/files/{id}")
+    @step("GET /v1/files/{{id}}")
     def retrieve_file(
         self, file_id: str, *, key: str, provider: str | None = None
     ) -> Result[FileObject]:
@@ -195,7 +195,7 @@ class BatchClient:
             json=body,
         )
 
-    @step("GET /v1/batches/{id}")
+    @step("GET /v1/batches/{{id}}")
     def retrieve_batch(
         self, batch_id: str, *, key: str, provider: str | None = None
     ) -> Result[BatchObject]:
@@ -206,7 +206,7 @@ class BatchClient:
             response_type=BatchObject,
         )
 
-    @step("POST /v1/batches/{id}/cancel")
+    @step("POST /v1/batches/{{id}}/cancel")
     def cancel_batch(
         self, batch_id: str, *, key: str, provider: str | None = None
     ) -> Result[BatchObject]:
@@ -233,7 +233,7 @@ class BatchClient:
             response_type=BatchList,
         )
 
-    @step("DELETE /v1/files/{id}")
+    @step("DELETE /v1/files/{{id}}")
     def delete_file(
         self, file_id: str, *, key: str, provider: str | None = None
     ) -> Result[FileDeleteResponse]:
@@ -244,7 +244,7 @@ class BatchClient:
             response_type=FileDeleteResponse,
         )
 
-    @step("DELETE /v1/files/{id} (admin)")
+    @step("DELETE /v1/files/{{id}} (admin)")
     def delete_file_as_admin(self, file_id: str, *, provider: str | None = None) -> Result[FileDeleteResponse]:
         return self.proxy.transport.delete(
             f"{_files_path(provider)}/{file_id}",

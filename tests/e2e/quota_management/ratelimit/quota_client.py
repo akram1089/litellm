@@ -17,7 +17,7 @@ from models import ChatBody, ChatMessage
 class QuotaClient:
     proxy: ProxyClient
 
-    @step("POST /chat/completions")
+    @step('Send a /chat/completions request to {model} with the prompt "{content}"')
     def chat(self, key: str, model: str, content: str, *, max_tokens: int = 16) -> StreamingResponse:
         return self.proxy.transport.send(
             "/chat/completions",
