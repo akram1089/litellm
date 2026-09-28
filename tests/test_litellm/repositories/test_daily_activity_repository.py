@@ -216,15 +216,17 @@ async def test_aggregated_only_reads_global_marker_for_unfiltered_user_scope() -
     database = _FakeDatabase(((),))
     repository, proxy_reads = _repository(database, _ProxyReads("2026-01-10"))
 
-    await repository.aggregated(_scope(entity_ids=None), include_entity_breakdown=False)
+    await repository.aggregated(
+        _scope(entity_ids=None), include_entity_breakdown=False, api_key_limit=constants.USAGE_TOP_API_KEYS_DEFAULT
+    )
 
     assert proxy_reads.marker_calls == 1
     assert database.query_calls[0][1][-3:] == (
         PTU_SENTINEL_API_KEY,
         "2026-01-10",
-        constants.USAGE_TOP_API_KEYS_LIMIT,
+        constants.USAGE_TOP_API_KEYS_DEFAULT,
     )
-    assert database.query_calls[0][1][-1] == constants.USAGE_TOP_API_KEYS_LIMIT
+    assert database.query_calls[0][1][-1] == constants.USAGE_TOP_API_KEYS_DEFAULT
 
 
 @pytest.mark.asyncio
@@ -241,7 +243,9 @@ async def test_aggregated_skips_global_marker_when_scope_is_not_global_user(scop
     database = _FakeDatabase(((),))
     repository, proxy_reads = _repository(database)
 
-    await repository.aggregated(scope, include_entity_breakdown=False)
+    await repository.aggregated(
+        scope, include_entity_breakdown=False, api_key_limit=constants.USAGE_TOP_API_KEYS_DEFAULT
+    )
 
     assert proxy_reads.marker_calls == 0
     assert database.query_calls
@@ -252,24 +256,23 @@ async def test_marker_failure_falls_back_to_per_key_query() -> None:
     database = _FakeDatabase(((),))
     repository, proxy_reads = _repository(database, _ProxyReads(marker_error=True))
 
-    await repository.aggregated(_scope(entity_ids=None), include_entity_breakdown=False)
+    await repository.aggregated(
+        _scope(entity_ids=None), include_entity_breakdown=False, api_key_limit=constants.USAGE_TOP_API_KEYS_DEFAULT
+    )
 
     assert proxy_reads.marker_calls == 1
-    assert database.query_calls[0][1][-2:] == (PTU_SENTINEL_API_KEY, constants.USAGE_TOP_API_KEYS_LIMIT)
+    assert database.query_calls[0][1][-2:] == (PTU_SENTINEL_API_KEY, constants.USAGE_TOP_API_KEYS_DEFAULT)
 
 
 @pytest.mark.asyncio
-async def test_key_methods_send_builder_query_and_clamp_limits(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(constants, "USAGE_KEY_SEARCH_LIMIT", 2)
-    monkeypatch.setattr(constants, "USAGE_MODEL_TOP_KEYS_LIMIT", 2)
-    monkeypatch.setattr(constants, "USAGE_CACHE_LEAKAGE_KEYS_LIMIT", 2)
+async def test_key_methods_send_builder_queries_with_caller_limits() -> None:
     database = _FakeDatabase(((_key_spend_row("key-a"),), (_key_spend_row("key-b"),), (_key_spend_row("key-c"),)))
     repository, _ = _repository(database)
     scope = _scope()
 
-    assert await repository.search_keys(scope, search="key", limit=10) == ("key-a",)
-    model_keys: Final = await repository.model_top_keys(scope, model_group="model-a", by_model_group=True, limit=10)
-    leakage_keys: Final = await repository.cache_leakage_keys(scope, limit=10)
+    assert await repository.search_keys(scope, search="key", limit=2) == ("key-a",)
+    model_keys: Final = await repository.model_top_keys(scope, model_group="model-a", by_model_group=True, limit=2)
+    leakage_keys: Final = await repository.cache_leakage_keys(scope, limit=2)
 
     assert tuple(row.api_key for row in model_keys) == ("key-b",)
     assert tuple(row.api_key for row in leakage_keys) == ("key-c",)
@@ -292,13 +295,24 @@ async def test_key_methods_send_builder_query_and_clamp_limits(monkeypatch: pyte
 
 
 @pytest.mark.asyncio
-async def test_key_methods_skip_queries_for_nonpositive_limits() -> None:
+async def test_key_methods_reject_limits_outside_bounds() -> None:
     database = _FakeDatabase()
     repository, _ = _repository(database)
 
-    assert await repository.search_keys(_scope(), search="key", limit=0) == ()
-    assert await repository.model_top_keys(_scope(), model_group="model-a", by_model_group=False, limit=0) == ()
-    assert await repository.cache_leakage_keys(_scope(), limit=0) == ()
+    with pytest.raises(ValueError, match="limit"):
+        await repository.search_keys(_scope(), search="key", limit=0)
+    with pytest.raises(ValueError, match="limit"):
+        await repository.model_top_keys(_scope(), model_group="model-a", by_model_group=False, limit=0)
+    with pytest.raises(ValueError, match="limit"):
+        await repository.cache_leakage_keys(_scope(), limit=0)
+    with pytest.raises(ValueError, match="limit"):
+        await repository.search_keys(_scope(), search="key", limit=constants.USAGE_KEY_SEARCH_MAX + 1)
+    with pytest.raises(ValueError, match="limit"):
+        await repository.model_top_keys(
+            _scope(), model_group="model-a", by_model_group=False, limit=constants.USAGE_MODEL_TOP_KEYS_MAX + 1
+        )
+    with pytest.raises(ValueError, match="limit"):
+        await repository.cache_leakage_keys(_scope(), limit=constants.USAGE_CACHE_LEAKAGE_KEYS_MAX + 1)
     assert database.query_calls == []
 
 
@@ -443,7 +457,9 @@ async def test_aggregated_normalizes_a_null_raw_query_result() -> None:
     database = _FakeDatabase((None,))
     repository, _ = _repository(database)
 
-    result = await repository.aggregated(_scope(), include_entity_breakdown=False)
+    result = await repository.aggregated(
+        _scope(), include_entity_breakdown=False, api_key_limit=constants.USAGE_TOP_API_KEYS_DEFAULT
+    )
 
     assert result.grouping_rows == ()
     assert result.entity_rows is None

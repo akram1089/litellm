@@ -137,9 +137,13 @@ class DailyActivityRepository:
             return ()
         return tuple(result)
 
-    async def aggregated(self, scope: DailyActivityScope, *, include_entity_breakdown: bool) -> AggregatedRows:
+    async def aggregated(
+        self, scope: DailyActivityScope, *, include_entity_breakdown: bool, api_key_limit: int
+    ) -> AggregatedRows:
         marker: Final = await self._global_rollup_marker(scope)
-        grouping_query: Final = build_aggregated_sql(scope, global_rollup_through=marker)
+        grouping_query: Final = build_aggregated_sql(
+            scope, api_key_limit=api_key_limit, global_rollup_through=marker
+        )
         entity_query: Final = build_entity_rollup_sql(scope) if include_entity_breakdown else None
         grouping_result, entity_result = await asyncio.gather(
             self._query(grouping_query),
@@ -168,32 +172,29 @@ class DailyActivityRepository:
             return None
 
     async def search_keys(self, scope: DailyActivityScope, *, search: str, limit: int) -> tuple[str, ...]:
-        if limit < 1:
-            return ()
-        bounded_limit: Final = min(limit, constants.USAGE_KEY_SEARCH_LIMIT)
-        query: Final = build_key_search_sql(scope, search=search, limit=bounded_limit)
+        if not 1 <= limit <= constants.USAGE_KEY_SEARCH_MAX:
+            raise ValueError(f"limit must be between 1 and {constants.USAGE_KEY_SEARCH_MAX}")
+        query: Final = build_key_search_sql(scope, search=search, limit=limit)
         rows: Final = _KEY_SPEND_ADAPTER.validate_python(await self._query(query))
         return tuple(row.api_key for row in rows)
 
     async def model_top_keys(
         self, scope: DailyActivityScope, *, model_group: str, by_model_group: bool, limit: int
     ) -> tuple[KeySpendRow, ...]:
-        if limit < 1:
-            return ()
-        bounded_limit: Final = min(limit, constants.USAGE_MODEL_TOP_KEYS_LIMIT)
+        if not 1 <= limit <= constants.USAGE_MODEL_TOP_KEYS_MAX:
+            raise ValueError(f"limit must be between 1 and {constants.USAGE_MODEL_TOP_KEYS_MAX}")
         query: Final = build_model_top_keys_sql(
             scope,
             model_group=model_group,
             by_model_group=by_model_group,
-            limit=bounded_limit,
+            limit=limit,
         )
         return _KEY_SPEND_ADAPTER.validate_python(await self._query(query))
 
     async def cache_leakage_keys(self, scope: DailyActivityScope, *, limit: int) -> tuple[KeySpendRow, ...]:
-        if limit < 1:
-            return ()
-        bounded_limit: Final = min(limit, constants.USAGE_CACHE_LEAKAGE_KEYS_LIMIT)
-        query: Final = build_cache_leakage_keys_sql(scope, limit=bounded_limit)
+        if not 1 <= limit <= constants.USAGE_CACHE_LEAKAGE_KEYS_MAX:
+            raise ValueError(f"limit must be between 1 and {constants.USAGE_CACHE_LEAKAGE_KEYS_MAX}")
+        query: Final = build_cache_leakage_keys_sql(scope, limit=limit)
         return _KEY_SPEND_ADAPTER.validate_python(await self._query(query))
 
     async def export_rows(self, scope: DailyActivityScope, *, export_type: ExportType) -> AsyncIterator[ExportRow]:
