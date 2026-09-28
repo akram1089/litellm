@@ -114,12 +114,10 @@ async def test_repository_queries_and_exports_seeded_daily_activity(monkeypatch:
     async with _daily_activity_database() as database:
         repository: Final = _repository(database)
         team_scope: Final = _scope(DailyActivityTable.TEAM, "team_id", "team-1")
-        monkeypatch.setattr(constants, "USAGE_TOP_API_KEYS_LIMIT", 3)
-        monkeypatch.setattr(constants, "USAGE_MODEL_TOP_KEYS_LIMIT", 3)
-        monkeypatch.setattr(constants, "USAGE_CACHE_LEAKAGE_KEYS_LIMIT", 2)
-        monkeypatch.setattr(constants, "USAGE_KEY_SEARCH_LIMIT", 10)
         monkeypatch.setattr(constants, "USAGE_EXPORT_BATCH_SIZE", 2)
-        aggregate: Final = await repository.aggregated(team_scope, include_entity_breakdown=True)
+        aggregate: Final = await repository.aggregated(
+            team_scope, include_entity_breakdown=True, api_key_limit=3
+        )
         totals: Final = tuple(row for row in aggregate.grouping_rows if row.group_level == 127)
         assert len(totals) == 1
         assert totals[0].spend == 1273.0
@@ -135,15 +133,15 @@ async def test_repository_queries_and_exports_seeded_daily_activity(monkeypatch:
         assert entity_totals[0].ptu_flat_cost == 42.0
 
         targeted_model_keys: Final = await repository.model_top_keys(
-            team_scope, model_group="model-target", by_model_group=False, limit=20
+            team_scope, model_group="model-target", by_model_group=False, limit=3
         )
         assert tuple(row.api_key for row in targeted_model_keys) == ("key-target",)
         popular_model_keys: Final = await repository.model_top_keys(
-            team_scope, model_group="model-popular", by_model_group=False, limit=20
+            team_scope, model_group="model-popular", by_model_group=False, limit=3
         )
         assert tuple(row.api_key for row in popular_model_keys) == ("key-a", "key-b", "key-c")
-        assert await repository.search_keys(team_scope, search="target", limit=20) == ("key-target",)
-        leakage_keys: Final = await repository.cache_leakage_keys(team_scope, limit=20)
+        assert await repository.search_keys(team_scope, search="target", limit=10) == ("key-target",)
+        leakage_keys: Final = await repository.cache_leakage_keys(team_scope, limit=2)
         assert tuple(row.api_key for row in leakage_keys) == ("key-cache", "key-c")
 
         exports: Final = tuple(
@@ -191,18 +189,21 @@ async def test_repository_queries_and_exports_seeded_daily_activity(monkeypatch:
 
 
 @pytest.mark.asyncio
-async def test_aggregated_returns_totals_when_top_key_limit_is_zero(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(constants, "USAGE_TOP_API_KEYS_LIMIT", 0)
+async def test_aggregated_returns_totals_with_a_one_key_limit() -> None:
     async with _daily_activity_database() as database:
         aggregate: Final = await _repository(database).aggregated(
             _scope(DailyActivityTable.TEAM, "team_id", "team-1"),
             include_entity_breakdown=False,
+            api_key_limit=1,
         )
 
         totals: Final = tuple(row for row in aggregate.grouping_rows if row.group_level == 127)
+        per_key_rows: Final = tuple(row for row in aggregate.grouping_rows if row.api_key is not None)
+        per_key_names: Final = frozenset(row.api_key for row in per_key_rows)
         assert len(totals) == 1
         assert totals[0].spend == 1273.0
-        assert all(row.api_key is None for row in aggregate.grouping_rows)
+        assert len(per_key_rows) == 6
+        assert len(per_key_names) == 1
 
 
 @pytest.mark.asyncio

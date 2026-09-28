@@ -185,6 +185,7 @@ def test_aggregated_query_uses_the_caller_date_bounds(offset_minutes: int | None
             start_date="2026-05-29",
             end_date="2026-05-29",
         ),
+        api_key_limit=constants.USAGE_TOP_API_KEYS_DEFAULT,
         global_rollup_through=None,
     )
 
@@ -194,7 +195,9 @@ def test_aggregated_query_uses_the_caller_date_bounds(offset_minutes: int | None
 
 
 def test_aggregate_query_sums_all_savings_drivers_and_response_time() -> None:
-    query = build_aggregated_sql(_scope(), global_rollup_through=None)
+    query = build_aggregated_sql(
+        _scope(), api_key_limit=constants.USAGE_TOP_API_KEYS_DEFAULT, global_rollup_through=None
+    )
     fields: Final = tuple(field for field in SpendMetrics.model_fields if field.endswith("_savings_spend")) + (
         "total_response_time_ms",
         "timed_requests",
@@ -204,11 +207,10 @@ def test_aggregate_query_sums_all_savings_drivers_and_response_time() -> None:
     assert all(f"SUM({field})" in query.sql for field in fields)
 
 
-def test_aggregated_query_binds_sentinel_and_marker_after_scope_values(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(constants, "USAGE_TOP_API_KEYS_LIMIT", 3)
+def test_aggregated_query_binds_sentinel_marker_and_api_key_limit_after_scope_values() -> None:
     scope = _scope(entity_ids=None, api_keys=("key-1",))
 
-    query = build_aggregated_sql(scope, global_rollup_through="2026-01-15")
+    query = build_aggregated_sql(scope, api_key_limit=3, global_rollup_through="2026-01-15")
 
     assert "api_key <> $4" in query.sql
     assert "LIMIT $6" in query.sql
@@ -222,13 +224,12 @@ def test_aggregated_query_binds_sentinel_and_marker_after_scope_values(monkeypat
     )
 
 
-def test_aggregated_query_supports_a_zero_top_key_limit(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(constants, "USAGE_TOP_API_KEYS_LIMIT", 0)
-
-    query = build_aggregated_sql(_scope(), global_rollup_through=None)
-
-    assert query.params[-1] == 0
-    assert f"LIMIT ${len(query.params)}" in query.sql
+@pytest.mark.parametrize("api_key_limit", [0, constants.USAGE_TOP_API_KEYS_MAX + 1])
+def test_aggregated_query_rejects_api_key_limits_outside_bounds(api_key_limit: int) -> None:
+    with pytest.raises(ValueError, match="api_key_limit"):
+        build_aggregated_sql(
+            _scope(), api_key_limit=api_key_limit, global_rollup_through=None
+        )
 
 
 def test_entity_rollup_uses_validated_entity_column_and_array_filters() -> None:

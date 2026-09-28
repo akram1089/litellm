@@ -161,13 +161,15 @@ def _key_free_source(pg_table: str, where_clause: str, marker_param: str | None)
         ) AS key_free_source"""
 
 
-def build_aggregated_sql(scope: DailyActivityScope, *, global_rollup_through: str | None) -> SqlQuery:
+def build_aggregated_sql(
+    scope: DailyActivityScope, *, api_key_limit: int, global_rollup_through: str | None
+) -> SqlQuery:
     pg_table: Final = PRISMA_TO_PG_TABLE[scope.table]
     where_clause, where_params = build_where_clause(scope)
     sentinel_param: Final = f"${len(where_params) + 1}"
     marker_param: Final = None if global_rollup_through is None else f"${len(where_params) + 2}"
-    top_keys_limit: Final = constants.USAGE_TOP_API_KEYS_LIMIT
-    _bounded_limit(top_keys_limit, minimum=0)
+    if not 1 <= api_key_limit <= constants.USAGE_TOP_API_KEYS_MAX:
+        raise ValueError(f"api_key_limit must be between 1 and {constants.USAGE_TOP_API_KEYS_MAX}")
     top_keys_limit_param: Final = len(where_params) + (3 if global_rollup_through is not None else 2)
     metric_select: Final = _rollup_metric_select(scope.table)
     sql: Final = f"""
@@ -229,7 +231,7 @@ def build_aggregated_sql(scope: DailyActivityScope, *, global_rollup_through: st
     marker_params: Final = () if global_rollup_through is None else (global_rollup_through,)
     return SqlQuery(
         sql=sql,
-        params=(*where_params, PTU_SENTINEL_API_KEY, *marker_params, top_keys_limit),
+        params=(*where_params, PTU_SENTINEL_API_KEY, *marker_params, api_key_limit),
     )
 
 

@@ -16,7 +16,7 @@ import litellm.proxy.management_endpoints.common_daily_activity as common_daily_
 from litellm.constants import (
     DAILY_GLOBAL_SPEND_RECONCILED_THROUGH_PARAM,
     PTU_SENTINEL_API_KEY,
-    USAGE_TOP_API_KEYS_LIMIT,
+    USAGE_TOP_API_KEYS_DEFAULT,
 )
 from litellm.proxy.management_endpoints.common_daily_activity import (
     _is_user_agent_tag,
@@ -58,6 +58,7 @@ async def _run_aggregated_daily_activity(
     timezone_offset_minutes: int | None = None,
     include_current_utc_day: bool = False,
     include_entity_breakdown: bool = False,
+    api_key_limit: int = USAGE_TOP_API_KEYS_DEFAULT,
 ) -> SpendAnalyticsPaginatedResponse:
     repository: Final = daily_activity_repository(prisma_client)
     scope: Final = daily_activity_scope(
@@ -77,6 +78,7 @@ async def _run_aggregated_daily_activity(
         scope,
         entity_metadata_field=entity_metadata_field,
         include_entity_breakdown=include_entity_breakdown,
+        api_key_limit=api_key_limit,
     )
 
 
@@ -95,6 +97,7 @@ async def get_daily_activity_aggregated(
     timezone_offset_minutes: int | None = None,
     include_current_utc_day: bool = False,
     include_entity_breakdown: bool = False,
+    api_key_limit: int = USAGE_TOP_API_KEYS_DEFAULT,
 ) -> SpendAnalyticsPaginatedResponse:
     return await _run_aggregated_daily_activity(
         prisma_client=prisma_client,
@@ -110,6 +113,7 @@ async def get_daily_activity_aggregated(
         timezone_offset_minutes=timezone_offset_minutes,
         include_current_utc_day=include_current_utc_day,
         include_entity_breakdown=include_entity_breakdown,
+        api_key_limit=api_key_limit,
     )
 
 
@@ -222,7 +226,7 @@ async def test_get_daily_activity_empty_entity_id_list():
     mock_prisma.db.litellm_dailyteamspend = mock_table
 
     # Call the function with empty entity_id list
-    result = await get_daily_activity(
+    await get_daily_activity(
         prisma_client=mock_prisma,
         table_name="litellm_dailyteamspend",
         entity_id_field="team_id",
@@ -1501,13 +1505,14 @@ async def test_get_daily_activity_aggregated_bounds_api_key_rollups(
 ):
     """Run the GROUPING SETS statement against real Postgres with more keys than the cap.
 
-    key-004 and key-005 tie on spend exactly at the USAGE_TOP_API_KEYS_LIMIT
+    key-004 and key-005 tie on spend exactly at the api_key_limit
     cutoff; the api_key tiebreaker must keep key-004 and drop key-005. The PTU
     sentinel outspends every key but must not take a slot. Excluded keys and the
     sentinel still count toward the totals and the model rollup, which come from
     the key-free arm.
     """
-    n_keys: Final = USAGE_TOP_API_KEYS_LIMIT + 5
+    api_key_limit: Final = 3
+    n_keys: Final = api_key_limit + 5
     key_rows: Final = [
         (
             f"row-{i:03d}",
@@ -1559,19 +1564,22 @@ async def test_get_daily_activity_aggregated_bounds_api_key_rollups(
         end_date="2026-06-01",
         model=None,
         api_key=None,
+        api_key_limit=api_key_limit,
     )
 
     # Key-free arm: (), (date), (date, model), (date, model_group), two providers,
     # one mcp NULL bucket, endpoint plus its NULL bucket = 9 rows regardless of key count.
     # Per-key arm: six per-key grouping sets, each capped at the limit.
-    assert row_counts == [9 + 6 * USAGE_TOP_API_KEYS_LIMIT]
+    assert row_counts == [9 + 6 * api_key_limit]
 
     assert result.metadata.total_spend == pytest.approx(key_spend + 1000.0)
     assert result.metadata.total_api_requests == n_keys
-    assert result.metadata.api_key_limit == USAGE_TOP_API_KEYS_LIMIT
+    assert result.metadata.api_key_limit == api_key_limit
     assert result.metadata.total_api_keys == n_keys
 
-    expected_top: Final = {f"key-{i:03d}" for i in range(6, n_keys)} | {"key-004"}
+    expected_top: Final = {
+        f"key-{i:03d}" for i in range(n_keys - api_key_limit + 1, n_keys)
+    } | {"key-004"}
     day: Final = result.results[0]
     assert day.metrics.spend == pytest.approx(key_spend + 1000.0)
     assert set(day.breakdown.api_keys) == expected_top
@@ -1687,7 +1695,7 @@ async def test_get_daily_activity_aggregated_serves_closed_days_from_the_global_
     two sources apart: a late day 1 row is invisible to totals until the next reconcile while a
     late day 2 row shows up at once, and both keys rank in the key breakdown, which stays
     per-key throughout."""
-    n_keys: Final = USAGE_TOP_API_KEYS_LIMIT + 3
+    n_keys: Final = USAGE_TOP_API_KEYS_DEFAULT + 3
     rows: Final = [
         (
             f"row-{day}-{i:03d}",
@@ -1738,7 +1746,7 @@ async def test_get_daily_activity_aggregated_serves_closed_days_from_the_global_
     assert from_global.metadata.total_response_time_ms == 2 * n_keys * 10 * 25
     assert from_global.metadata.total_timed_requests == 2 * n_keys
     assert {day.date.isoformat() for day in from_global.results} == {"2026-06-01", "2026-06-02"}
-    assert len(from_global.results[0].breakdown.api_keys) == USAGE_TOP_API_KEYS_LIMIT
+    assert len(from_global.results[0].breakdown.api_keys) == USAGE_TOP_API_KEYS_DEFAULT
     assert set(from_global.results[0].breakdown.model_groups) == {"gpt-5", "claude"}
 
     with _aggregated_postgresql.cursor() as cur:
@@ -1774,7 +1782,7 @@ async def test_get_daily_activity_aggregated_serves_closed_days_from_the_global_
 async def test_get_daily_activity_aggregated_reports_exact_limit_key_count_as_complete(
     _aggregated_postgresql: psycopg.Connection,
 ):
-    """With exactly USAGE_TOP_API_KEYS_LIMIT keys nothing is dropped, and the
+    """With exactly USAGE_TOP_API_KEYS_DEFAULT keys nothing is dropped, and the
     response must say so: total_api_keys equals the limit rather than exceeding it."""
     rows: Final = [
         (
@@ -1791,7 +1799,7 @@ async def test_get_daily_activity_aggregated_reports_exact_limit_key_count_as_co
             1,
             1,
         )
-        for i in range(USAGE_TOP_API_KEYS_LIMIT)
+        for i in range(USAGE_TOP_API_KEYS_DEFAULT)
     ]
     _seed_daily_user_spend(_aggregated_postgresql, rows)
 
@@ -1814,9 +1822,9 @@ async def test_get_daily_activity_aggregated_reports_exact_limit_key_count_as_co
         api_key=None,
     )
 
-    assert result.metadata.total_api_keys == USAGE_TOP_API_KEYS_LIMIT
-    assert result.metadata.api_key_limit == USAGE_TOP_API_KEYS_LIMIT
-    assert len(result.results[0].breakdown.api_keys) == USAGE_TOP_API_KEYS_LIMIT
+    assert result.metadata.total_api_keys == USAGE_TOP_API_KEYS_DEFAULT
+    assert result.metadata.api_key_limit == USAGE_TOP_API_KEYS_DEFAULT
+    assert len(result.results[0].breakdown.api_keys) == USAGE_TOP_API_KEYS_DEFAULT
 
 
 @pytest.mark.asyncio

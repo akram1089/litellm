@@ -960,9 +960,12 @@ async def get_daily_activity_aggregated(
     *,
     entity_metadata_field: Mapping[str, dict[str, object]] | None = None,
     include_entity_breakdown: bool = False,
+    api_key_limit: int = constants.USAGE_TOP_API_KEYS_DEFAULT,
 ) -> SpendAnalyticsPaginatedResponse:
     try:
-        aggregated_rows: Final = await repository.aggregated(scope, include_entity_breakdown=include_entity_breakdown)
+        aggregated_rows: Final = await repository.aggregated(
+            scope, include_entity_breakdown=include_entity_breakdown, api_key_limit=api_key_limit
+        )
         records: Final = aggregated_rows.grouping_rows
         aggregated: Final = await _aggregate_grouping_sets_records(
             repository=repository,
@@ -1012,7 +1015,7 @@ async def get_daily_activity_aggregated(
                 page=1,
                 total_pages=1,
                 has_more=False,
-                api_key_limit=constants.USAGE_TOP_API_KEYS_LIMIT,
+                api_key_limit=api_key_limit,
                 total_api_keys=aggregated_rows.distinct_api_keys,
             ),
         )
