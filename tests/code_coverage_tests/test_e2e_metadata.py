@@ -10,14 +10,20 @@ test_e2e_junit_report.py.
 
 from __future__ import annotations
 
+import ast
+import inspect
+import string
 import threading
 import warnings
-from collections.abc import Generator
+from collections.abc import Callable, Generator, Iterator, Mapping
 from contextlib import contextmanager
 from pathlib import Path
+from types import UnionType
+from typing import Final, cast, get_args, get_type_hints
 
 import pytest
 from e2e_metadata import MAX_STEPS, STEP_FRAMES, STEPS, step
+from proxy_client import ProxyClient
 from pydantic import BaseModel, Field
 
 
@@ -114,6 +120,49 @@ class _KeyBody(BaseModel):
     api_key: str | None = Field(default=None, repr=False)
 
 
+class _Params(BaseModel):
+    model: str
+    api_key: str | None = Field(default=None, repr=False)
+
+
+class _DeploymentBody(BaseModel):
+    model_name: str
+    params: _Params
+
+
+def _field_type(annotation: object) -> object:
+    """`X | None` is `X`: a placeholder reads the field when it is set."""
+    present: Final = tuple(arg for arg in get_args(annotation) if arg is not type(None))
+    return present[0] if isinstance(annotation, UnionType) and len(present) == 1 else annotation
+
+
+def _dotted_placeholders(owner: type) -> Iterator[tuple[str, str]]:
+    tree: Final = ast.parse(inspect.getsource(owner))
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.FunctionDef):
+            continue
+        for decorator in node.decorator_list:
+            match decorator:
+                case ast.Call(func=ast.Name(id="step"), args=[ast.Constant(value=str(label))]):
+                    for _, field, _, _ in string.Formatter().parse(label):
+                        if field is not None and "." in field:
+                            yield node.name, field
+                case _:
+                    pass
+
+
+def _resolves(owner: type, method: str, field: str) -> bool:
+    root, *attributes = field.split(".")
+    wrapped: Final = cast("Callable[..., object]", getattr(owner, method))
+    hints: Final[Mapping[str, object]] = get_type_hints(inspect.unwrap(wrapped))
+    current: object = _field_type(hints[root])  # rebind-ok: walks one type per attribute
+    for attribute in attributes:
+        if not (isinstance(current, type) and issubclass(current, BaseModel) and attribute in current.model_fields):
+            return False
+        current = _field_type(current.model_fields[attribute].annotation)  # rebind-ok: walks one type per attribute
+    return True
+
+
 class TestLabelTemplates:
     """A label's `{placeholders}` are filled from the call's own arguments, so the
     story says what the test asked for in words, and nothing the label doesn't name
@@ -154,6 +203,29 @@ class TestLabelTemplates:
 
         with pytest.raises(TypeError, match="modle"):
             _ = step("Send a request to {modle}")(chat)
+
+    def test_a_dotted_placeholder_reads_one_field_of_a_request_model(self) -> None:
+        @step("Add a deployment named {body.model_name} that calls {body.params.model}")
+        def register_model(body: _DeploymentBody) -> None:
+            return None
+
+        register_model(_DeploymentBody(model_name="gpt", params=_Params(model="openai/gpt-5.5")))
+        assert STEPS.taken() == ("Add a deployment named gpt that calls openai/gpt-5.5",)
+
+    def test_a_placeholder_that_indexes_or_calls_is_refused(self) -> None:
+        def chat(body: _DeploymentBody) -> None:
+            return None
+
+        with pytest.raises(TypeError, match=r"body\.messages\[0\]"):
+            _ = step("Send {body.messages[0]}")(chat)
+
+    @pytest.mark.parametrize("owner", [ProxyClient], ids=["ProxyClient"])
+    def test_every_dotted_placeholder_in_the_harness_names_a_real_field(self, owner: type) -> None:
+        """A dotted placeholder is read on every live call, so one naming a field the
+        request model doesn't have would fail the test calling it, not the label."""
+        placeholders: Final = tuple(_dotted_placeholders(owner))
+        assert placeholders
+        assert [f"{method}: {field}" for method, field in placeholders if not _resolves(owner, method, field)] == []
 
     def test_escaped_braces_stay_literal(self) -> None:
         @step("GET /v1/batches/{{id}}")

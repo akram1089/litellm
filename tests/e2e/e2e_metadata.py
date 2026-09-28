@@ -13,13 +13,14 @@ this one, so it imports only the stdlib and pydantic.
 from __future__ import annotations
 
 import inspect
+import re
 import string
 import threading
 from collections import deque
-from collections.abc import Callable, Generator, Iterable
+from collections.abc import Callable, Generator, Iterable, Mapping
 from contextlib import AbstractContextManager, contextmanager
 from enum import Enum
-from functools import wraps
+from functools import reduce, wraps
 from types import TracebackType
 from typing import Final, ParamSpec, TypeVar, cast
 
@@ -104,8 +105,12 @@ def _model_phrase(model: BaseModel) -> str:
         for name, field in type(model).model_fields.items()
         if name in model.model_fields_set and field.repr
     )
-    phrases: Final = tuple(f"{name.replace('_', ' ')}: {_phrase(value)}" for name, value in values if value is not None)
+    phrases: Final = tuple(f"{name.replace('_', ' ')}: {_phrase(value)}" for name, value in values if _given(value))
     return _joined(phrases) or "default settings"
+
+
+def _given(value: object) -> bool:
+    return value is not None and value != [] and value != ()
 
 
 def _phrase(value: object) -> str:
@@ -113,20 +118,34 @@ def _phrase(value: object) -> str:
         return _model_phrase(value)
     if isinstance(value, Enum):
         return _phrase(cast("object", value.value))
+    if isinstance(value, Mapping):
+        entries: Final = cast("Mapping[object, object]", value)
+        return _joined(tuple(f"{str(key).replace('_', ' ')}: {_phrase(item)}" for key, item in entries.items()))
     if isinstance(value, (list, tuple, set, frozenset)):
         return ", ".join(map(_phrase, cast("Iterable[object]", value)))
     return str(value)
+
+
+_PLACEHOLDER: Final = re.compile(r"[A-Za-z_]\w*(\.[A-Za-z_]\w*)*")
 
 
 def _placeholders(label: str) -> frozenset[str]:
     return frozenset(field for _, field, _, _ in string.Formatter().parse(label) if field is not None)
 
 
-def _filled(label: str, placeholders: frozenset[str], bound: inspect.BoundArguments) -> str:
-    if not placeholders:
-        return label.format()
+def _resolved(field: str, arguments: Mapping[str, object]) -> object:
+    """`body.litellm_params.model` is the `body` argument's `litellm_params.model`."""
+    root, *attributes = field.split(".")
+    return reduce(lambda value, attribute: cast("object", getattr(value, attribute)), attributes, arguments[root])
+
+
+def _filled(label: str, bound: inspect.BoundArguments) -> str:
     bound.apply_defaults()
-    return label.format_map({name: _phrase(cast("object", bound.arguments[name])) for name in placeholders})
+    arguments: Final = cast("Mapping[str, object]", bound.arguments)
+    return "".join(
+        literal + ("" if field is None else _phrase(_resolved(field, arguments)))
+        for literal, field, _, _ in string.Formatter().parse(label)
+    )
 
 
 class _Nesting(threading.local):
@@ -206,9 +225,13 @@ def step(label: str) -> Callable[[Callable[_P, _R]], Callable[_P, _R]]:
     def decorate(fn: Callable[_P, _R]) -> Callable[_P, _R]:
         signature: Final = inspect.signature(fn)
         placeholders: Final = _placeholders(label)
-        unknown: Final = placeholders - signature.parameters.keys()
+        malformed: Final = sorted(field for field in placeholders if not _PLACEHOLDER.fullmatch(field))
+        if malformed:
+            raise TypeError(f"@step({label!r}) has {malformed}: a placeholder is a parameter or its dotted attribute")
+        unknown: Final = {field.split(".")[0] for field in placeholders} - signature.parameters.keys()
         if unknown:
             raise TypeError(f"@step({label!r}) names {sorted(unknown)}, which {fn.__qualname__} doesn't take")
+        static_label: Final = None if placeholders else label.format()
         if inspect.isgeneratorfunction(fn):
             raise TypeError(
                 f"@step({label!r}) cannot wrap the generator function {fn!r}: put it on a helper that"
@@ -220,7 +243,7 @@ def step(label: str) -> Callable[[Callable[_P, _R]], Callable[_P, _R]]:
         @wraps(fn)
         def wrapper(*args: _P.args, **kwargs: _P.kwargs) -> _R:
             if not _NESTING.inside:
-                STEPS.record(_filled(label, placeholders, signature.bind(*args, **kwargs)))
+                STEPS.record(static_label or _filled(label, signature.bind(*args, **kwargs)))
             with _inside_step():
                 result = fn(*args, **kwargs)
             if opens_a_context and isinstance(result, AbstractContextManager):
